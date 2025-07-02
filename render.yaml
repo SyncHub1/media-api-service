@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: media-api-service
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: media-redis
+          property: connectionString
+      - key: MONGODB_URI
+        fromService:
+          type: pserv
+          name: media-mongodb
+          property: connectionString
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        value: https://your-frontend-app.onrender.com
+
+databases:
+  - name: media-mongodb
+    databaseName: media-processing
+    user: media-user
+
+services:
+  - type: redis
+    name: media-redis
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru 
