@@ -5,7 +5,12 @@ const GroupSchema = new mongoose.Schema({
   avatar: { type: String },
   members: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   admins: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  createdAt: { type: Date, default: Date.now }
+  lastMessage: {
+    type: Object, // Can be changed to message ID if preferred
+    default: null
+  }
+}, {
+  timestamps: true // Adds createdAt and updatedAt
 });
 
 const Group = mongoose.model('Group', GroupSchema);

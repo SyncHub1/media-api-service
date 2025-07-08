@@ -1,14 +1,15 @@
 import express from 'express';
 import authMiddleware from '../middleware/auth.js';
-import { getMessages, markSeen } from '../controllers/messageController.js';
+import { getMessages, markSeen, getChatUsers } from '../controllers/messageController.js';
 
 const router = express.Router();
 
-// Add authentication middleware to get current user
-router.get('/:userId', authMiddleware, getMessages);
-router.post('/seen/:id', authMiddleware, markSeen);
+router.use(authMiddleware);
 
 // GET /api/messages/:userId?groupId=... for group chat history
-// If groupId is present, returns group messages. Otherwise, returns DM history.
+router.get('/:userId', getMessages);
+// GET /api/messages/chat-users for getting all users the current user has chatted with
+router.get('/chat-users', getChatUsers);
+router.post('/seen/:id', markSeen);
 
 export default router; 

@@ -5,9 +5,27 @@ export async function createGroup(req, res) {
   try {
     const { name, avatar, members } = req.body;
     const admins = [req.user._id];
-    const group = await Group.create({ name, avatar, members, admins });
-    res.status(201).json(group);
+    
+    // Ensure the creator is included in members if not already
+    const allMembers = members.includes(req.user._id) ? members : [...members, req.user._id];
+    
+    const group = await Group.create({ 
+      name, 
+      avatar, 
+      members: allMembers, 
+      admins,
+      lastMessage: `Group "${name}" was created`,
+      lastMessageTime: new Date()
+    });
+    
+    // Populate the group with member details for the response
+    const populatedGroup = await Group.findById(group._id)
+      .populate('members', 'name username avatar email')
+      .populate('admins', 'name username avatar email');
+    
+    res.status(201).json(populatedGroup);
   } catch (err) {
+    console.error('Error creating group:', err);
     res.status(500).json({ error: err.message });
   }
 }
@@ -15,7 +33,10 @@ export async function createGroup(req, res) {
 export async function getGroups(req, res) {
   try {
     const userId = req.user._id;
-    const groups = await Group.find({ members: userId });
+    // Populate lastMessage and sort by updatedAt descending
+    const groups = await Group.find({ members: userId })
+      .sort({ updatedAt: -1 })
+      .lean();
     res.json(groups);
   } catch (err) {
     res.status(500).json({ error: err.message });

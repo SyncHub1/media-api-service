@@ -72,6 +72,74 @@ export async function getMessages(req, res) {
   }
 }
 
+export async function getChatUsers(req, res) {
+  try {
+    const userId = req.user?._id;
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+
+    console.log('📨 Getting chat users for userId:', userId);
+
+    // Use aggregation to find all unique users the current user has chatted with
+    const chatUsers = await Message.aggregate([
+      {
+        $match: {
+          $or: [
+            { senderId: userId },
+            { receiverId: userId }
+          ],
+          // Exclude group messages and deleted messages
+          groupId: { $exists: false },
+          deletedFor: { $ne: userId },
+          deletedForEveryone: { $ne: true }
+        }
+      },
+      {
+        $project: {
+          otherUserId: {
+            $cond: {
+              if: { $eq: ['$senderId', userId] },
+              then: '$receiverId',
+              else: '$senderId'
+            }
+          },
+          lastMessage: {
+            content: '$content',
+            timestamp: '$timestamp',
+            type: '$type',
+            senderId: '$senderId'
+          }
+        }
+      },
+      {
+        $group: {
+          _id: '$otherUserId',
+          lastMessage: { $last: '$lastMessage' },
+          messageCount: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { 'lastMessage.timestamp': -1 }
+      }
+    ]);
+
+    console.log(`✅ Found ${chatUsers.length} chat users`);
+    res.json(chatUsers);
+
+  } catch (err) {
+    console.error('❌ Error in getChatUsers:', err);
+    res.status(500).json({ 
+      error: err.message,
+      code: 'INTERNAL_ERROR'
+    });
+  }
+}
+
 export async function markSeen(req, res) {
   try {
     const { id } = req.params;
