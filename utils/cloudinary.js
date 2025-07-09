@@ -13,8 +13,12 @@ cloudinary.config({
 // Upload file to Cloudinary
 export const uploadToCloudinary = async (fileBuffer, options = {}) => {
   try {
+    let resourceType = 'auto';
+    if (options.mimetype === 'application/pdf' || (options.filename && options.filename.match(/\.pdf$/i))) {
+      resourceType = 'raw';
+    }
     const uploadOptions = {
-      resource_type: 'auto',
+      resource_type: resourceType,
       ...options
     };
 
