@@ -15,11 +15,12 @@ const upload = multer({
     fileSize: 100 * 1024 * 1024, // 100MB limit
   },
   fileFilter: (req, file, cb) => {
-    // Allow images, videos, and audio files
+    // Allow images, videos, audio files, and PDFs
     const allowedTypes = [
       'image/jpeg', 'image/png', 'image/gif', 'image/webp',
       'video/mp4', 'video/avi', 'video/mov', 'video/wmv', 'video/flv',
-      'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/m4a'
+      'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/m4a',
+      'application/pdf'
     ];
     
     if (allowedTypes.includes(file.mimetype)) {

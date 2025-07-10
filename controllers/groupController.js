@@ -48,3 +48,31 @@ export async function addMember(req, res) { res.status(501).json({ error: 'Not i
 export async function removeMember(req, res) { res.status(501).json({ error: 'Not implemented' }); }
 export async function getGroup(req, res) { res.status(501).json({ error: 'Not implemented' }); }
 export async function getGroupMessages(req, res) { res.status(501).json({ error: 'Not implemented' }); } 
+
+export async function pinMessage(req, res) {
+  try {
+    const { groupId } = req.params;
+    const { messageId } = req.body;
+    const group = await Group.findById(groupId);
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+    group.pinnedMessage = messageId || null;
+    await group.save();
+    res.json({ success: true, pinnedMessage: group.pinnedMessage });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function setTyping(req, res) {
+  try {
+    const { groupId } = req.params;
+    const { userIds } = req.body; // array of userIds currently typing
+    const group = await Group.findById(groupId);
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+    group.isTyping = userIds || [];
+    await group.save();
+    res.json({ success: true, isTyping: group.isTyping });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+} 
