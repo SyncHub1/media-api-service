@@ -1,78 +1,383 @@
-import Group from '../models/Group.model.js';
-import Message from '../models/Message.model.js';
+import Message from "../models/Message.model.js";
+import mongoose from "mongoose";
+import Redis from "ioredis";
 
-export async function createGroup(req, res) {
+const redis = global._redisPub || new Redis(process.env.REDIS_URL);
+if (!global._redisPub) global._redisPub = redis;
+
+export async function getMessages(req, res) {
   try {
-    const { name, avatar, members } = req.body;
-    const admins = [req.user._id];
-    
-    // Ensure the creator is included in members if not already
-    const allMembers = members.includes(req.user._id) ? members : [...members, req.user._id];
-    
-    const group = await Group.create({ 
-      name, 
-      avatar, 
-      members: allMembers, 
-      admins,
-      lastMessage: `Group "${name}" was created`,
-      lastMessageTime: new Date()
+    console.log("📨 getMessages called with:", {
+      userId: req.user?._id,
+      otherUserId: req.params.userId,
+      groupId: req.query.groupId,
     });
-    
-    // Populate the group with member details for the response
-    const populatedGroup = await Group.findById(group._id)
-      .populate('members', 'name username avatar email')
-      .populate('admins', 'name username avatar email');
-    
-    res.status(201).json(populatedGroup);
+
+    const userId = req.user?._id;
+    const otherUserId = req.params.userId;
+    const groupId = req.query.groupId;
+
+    // Validate user authentication
+    if (!userId) {
+      console.log("❌ No authenticated user found");
+      return res.status(401).json({
+        error: "Authentication required",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    // Handle group chat history
+    if (groupId) {
+      console.log("📨 Fetching group messages for groupId:", groupId);
+      const limit = parseInt(req.query.limit) || 50;
+      const skip = parseInt(req.query.skip) || 0;
+      let messages = await Message.find({
+        groupId,
+        hiddenFor: { $ne: userId },
+        isDeleted: { $ne: true },
+      })
+        .sort({ timestamp: 1 })
+        .skip(skip)
+        .limit(limit);
+      // Replace deleted messages with placeholder
+      messages = messages.map((m) =>
+        m.isDeleted
+          ? {
+              ...m.toObject(),
+              content: "This message was deleted",
+              isDeleted: true,
+            }
+          : m
+      );
+      console.log(`✅ Found ${messages.length} group messages`);
+      return res.json(messages);
+    }
+
+    // Validate other user ID
+    if (!otherUserId) {
+      console.log("❌ Missing other user ID");
+      return res.status(400).json({
+        error: "Missing other user ID",
+        code: "MISSING_USER_ID",
+      });
+    }
+
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(otherUserId)) {
+      console.log("❌ Invalid other user ID format:", otherUserId);
+      return res.status(400).json({
+        error: "Invalid user ID format",
+        code: "INVALID_USER_ID",
+      });
+    }
+
+    console.log(
+      "📨 Fetching direct messages between:",
+      userId,
+      "and",
+      otherUserId
+    );
+
+    // Fetch direct messages between the two users
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = parseInt(req.query.skip) || 0;
+    let messages = await Message.find({
+      $or: [
+        { senderId: userId, receiverId: otherUserId },
+        { senderId: otherUserId, receiverId: userId },
+      ],
+      hiddenFor: { $ne: userId },
+      isDeleted: { $ne: true },
+    })
+      .sort({ timestamp: 1 })
+      .skip(skip)
+      .limit(limit);
+    // Replace deleted messages with placeholder
+    messages = messages.map((m) =>
+      m.isDeleted
+        ? {
+            ...m.toObject(),
+            content: "This message was deleted",
+            isDeleted: true,
+          }
+        : m
+    );
+    console.log(`✅ Found ${messages.length} direct messages`);
+
+    res.json(messages);
   } catch (err) {
-    console.error('Error creating group:', err);
+    console.error("❌ Error in getMessages:", err);
+    res.status(500).json({
+      error: err.message,
+      code: "INTERNAL_ERROR",
+    });
+  }
+}
+
+export async function getChatUsers(req, res) {
+  try {
+    const userId = req.user?._id;
+
+    if (!userId) {
+      return res.status(401).json({
+        error: "Authentication required",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    console.log("📨 Getting chat users for userId:", userId);
+
+    // Use aggregation to find all unique users the current user has chatted with
+    const chatUsers = await Message.aggregate([
+      {
+        $match: {
+          $or: [{ senderId: userId }, { receiverId: userId }],
+          // Exclude group messages and deleted messages
+          groupId: { $exists: false },
+          hiddenFor: { $ne: userId },
+          isDeleted: { $ne: true },
+        },
+      },
+      {
+        $project: {
+          otherUserId: {
+            $cond: {
+              if: { $eq: ["$senderId", userId] },
+              then: "$receiverId",
+              else: "$senderId",
+            },
+          },
+          lastMessage: {
+            content: "$content",
+            timestamp: "$timestamp",
+            type: "$type",
+            senderId: "$senderId",
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$otherUserId",
+          lastMessage: { $last: "$lastMessage" },
+          messageCount: { $sum: 1 },
+        },
+      },
+      {
+        $sort: { "lastMessage.timestamp": -1 },
+      },
+    ]);
+
+    console.log(`✅ Found ${chatUsers.length} chat users`);
+    res.json(chatUsers);
+  } catch (err) {
+    console.error("❌ Error in getChatUsers:", err);
+    res.status(500).json({
+      error: err.message,
+      code: "INTERNAL_ERROR",
+    });
+  }
+}
+
+export async function markSeen(req, res) {
+  try {
+    const { id } = req.params;
+    if (!id || id === "undefined" || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid or missing message ID" });
+    }
+    const userId = req.user?._id;
+    const message = await Message.findById(id);
+    if (!message) return res.status(404).json({ error: "Message not found" });
+    if (
+      !message.seenBy.map((id) => id.toString()).includes(userId.toString())
+    ) {
+      message.seenBy.push(userId);
+      await message.save();
+      await redis.publish(
+        "chat:seen",
+        JSON.stringify({
+          messageId: message._id.toString(),
+          userId: userId.toString(),
+        })
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 }
 
-export async function getGroups(req, res) {
+export async function markRead(req, res) {
   try {
-    const userId = req.user._id;
-    // Populate lastMessage and sort by updatedAt descending
-    const groups = await Group.find({ members: userId })
-      .sort({ updatedAt: -1 })
-      .lean();
-    res.json(groups);
+    const { id } = req.params;
+    if (!id || id === "undefined" || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid or missing message ID" });
+    }
+    const userId = req.user?._id;
+    const message = await Message.findById(id);
+    if (!message) return res.status(404).json({ error: "Message not found" });
+    if (
+      !message.readBy.map((id) => id.toString()).includes(userId.toString())
+    ) {
+      message.readBy.push(userId);
+      await message.save();
+
+      await redis.publish(
+        "chat:read",
+        JSON.stringify({
+          messageId: message._id.toString(),
+          userId: userId.toString(),
+        })
+      );
+    }
+    res.json({ success: true, message });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 }
 
-// Stubs for future expansion
-export async function addMember(req, res) { res.status(501).json({ error: 'Not implemented' }); }
-export async function removeMember(req, res) { res.status(501).json({ error: 'Not implemented' }); }
-export async function getGroup(req, res) { res.status(501).json({ error: 'Not implemented' }); }
-export async function getGroupMessages(req, res) { res.status(501).json({ error: 'Not implemented' }); } 
-
-export async function pinMessage(req, res) {
+export async function sendMessage(req, res) {
   try {
-    const { groupId } = req.params;
-    const { messageId } = req.body;
-    const group = await Group.findById(groupId);
-    if (!group) return res.status(404).json({ error: 'Group not found' });
-    group.pinnedMessage = messageId || null;
-    await group.save();
-    res.json({ success: true, pinnedMessage: group.pinnedMessage });
+    const userId = req.user?._id;
+    const {
+      receiverId,
+      groupId,
+      content,
+      type = "text",
+      fileUrl,
+      fileName,
+      fileSize,
+      replyTo,
+    } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    if (!groupId && !receiverId) {
+      return res.status(400).json({ error: "Missing receiverId or groupId" });
+    }
+
+    const messageData = {
+      senderId: userId,
+      content,
+      type,
+      fileUrl,
+      fileName,
+      fileSize,
+      replyTo,
+    };
+    if (groupId) messageData.groupId = groupId;
+    if (receiverId) messageData.receiverId = receiverId;
+
+    const message = await Message.create(messageData);
+
+    await redis.publish("chat:new", JSON.stringify(message));
+
+    res.status(201).json(message);
+  } catch (err) {
+    console.error("❌ Error in sendMessage:", err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function softDeleteMessage(req, res) {
+  try {
+    const { id } = req.params;
+    if (!id || id === "undefined" || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid or missing message ID" });
+    }
+    const userId = req.user?._id;
+    const message = await Message.findById(id);
+    if (!message) return res.status(404).json({ error: "Message not found" });
+    // Only sender or admin can delete
+    if (message.senderId.toString() !== userId.toString()) {
+      return res
+        .status(403)
+        .json({ error: "Not authorized to delete this message" });
+    }
+    message.isDeleted = true;
+
+    await redis.publish(
+      "chat:delete",
+      JSON.stringify({
+        messageId: message._id.toString(),
+        groupId: message.groupId || null,
+        senderId: message.senderId.toString(),
+        receiverId: message.receiverId || null,
+        forEveryone: true,
+      })
+    );
+
+    await message.save();
+    res.json({ success: true, message });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 }
 
-export async function setTyping(req, res) {
+// Add: Delete for Me
+export async function deleteForMe(req, res) {
   try {
-    const { groupId } = req.params;
-    const { userIds } = req.body; // array of userIds currently typing
-    const group = await Group.findById(groupId);
-    if (!group) return res.status(404).json({ error: 'Group not found' });
-    group.isTyping = userIds || [];
-    await group.save();
-    res.json({ success: true, isTyping: group.isTyping });
+    const { id } = req.params;
+    const userId = req.user?._id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid or missing message ID" });
+    }
+    const message = await Message.findById(id);
+    if (!message) return res.status(404).json({ error: "Message not found" });
+    if (!message.hiddenFor.includes(userId)) {
+      message.hiddenFor.push(userId);
+      await message.save();
+    }
+
+    // Publish Redis event for real-time delete for me
+    await redis.publish(
+      "chat:delete",
+      JSON.stringify({
+        messageId: message._id.toString(),
+        groupId: message.groupId ? message.groupId.toString() : null,
+        senderId: message.senderId.toString(),
+        receiverId: message.receiverId ? message.receiverId.toString() : null,
+        userId: userId.toString(),
+        forEveryone: false,
+      })
+    );
+
+    res.json({ success: true, message });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-} 
+}
+// Add: Delete for Everyone
+export async function deleteForEveryone(req, res) {
+  try {
+    const { id } = req.params;
+    const userId = req.user?._id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid or missing message ID" });
+    }
+    const message = await Message.findById(id);
+    if (!message) return res.status(404).json({ error: "Message not found" });
+    if (String(message.senderId) !== String(userId)) {
+      return res
+        .status(403)
+        .json({ error: "Only the sender can delete for everyone" });
+    }
+    message.isDeleted = true;
+    await message.save();
+    // Publish Redis event for real-time delete
+
+    await redis.publish(
+      "chat:delete",
+      JSON.stringify({
+        messageId: message._id.toString(),
+        groupId: message.groupId ? message.groupId.toString() : null,
+        senderId: message.senderId.toString(),
+        receiverId: message.receiverId ? message.receiverId.toString() : null,
+        forEveryone: true,
+      })
+    );
+    res.json({ success: true, message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
